@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Number Range Expander</title>
+<style>
+  :root {
+    --bg: #f3f5f7;
+    --panel: #ffffff;
+    --text: #1b2430;
+    --muted: #5d6b7a;
+    --line: #d5dbe2;
+    --accent: #1f5fbf;
+    --accent-text: #ffffff;
+    --error: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12171d;
+      --panel: #1a2129;
+      --text: #e8edf2;
+      --muted: #97a4b3;
+      --line: #2e3945;
+      --accent: #6aa3f0;
+      --accent-text: #0d1319;
+      --error: #f2928c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+    line-height: 1.5;
+  }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 20px 56px; }
+  h1 { font-size: 1.6rem; margin: 0 0 6px; }
+  p.lead { margin: 0 0 24px; color: var(--muted); max-width: 62ch; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+  }
+  label { font-weight: 600; margin-bottom: 8px; display: block; }
+  textarea {
+    width: 100%;
+    min-height: 320px;
+    resize: vertical;
+    padding: 12px;
+    font: 15px/1.5 Consolas, "Courier New", monospace;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+  textarea:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  button {
+    font: inherit;
+    font-weight: 600;
+    padding: 9px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .status { color: var(--muted); font-size: 0.92rem; }
+  .error { color: var(--error); font-size: 0.92rem; margin-top: 10px; white-space: pre-line; }
+  details { margin-top: 28px; color: var(--muted); }
+  summary { cursor: pointer; font-weight: 600; color: var(--text); }
+  code { font-family: Consolas, "Courier New", monospace; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Number range expander</h1>
+  <p class="lead">Paste your numbers, one per line. Single numbers stay as they are. Ranges are expanded into every number, one per line.</p>
+
+  <div class="grid">
+    <section class="panel">
+      <label for="input">Input</label>
+      <textarea id="input" spellcheck="false" placeholder="7803423515&#10;78034235173518&#10;7803423541&#10;78034235433544"></textarea>
+      <div class="row">
+        <button class="primary" id="run" type="button">Expand numbers</button>
+        <button id="clear" type="button">Clear</button>
+        <button id="example" type="button">Load example</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <label for="output">Result</label>
+      <textarea id="output" readonly spellcheck="false"></textarea>
+      <div class="row">
+        <button id="dedupe" type="button">Remove duplicates</button>
+        <button id="copy" type="button">Copy result</button>
+        <span class="status" id="status" aria-live="polite"></span>
+      </div>
+      <div class="error" id="errors" role="alert"></div>
+    </section>
+  </div>
+
+  <details>
+    <summary>How the input is read</summary>
+    <p>
+      A 10-digit line is a single number.
+      A 14-digit line is a range: the first 10 digits are the start, and the last 4 digits replace the end of the start number to give the last number in the range.
+      For example, <code>78034235763579</code> becomes 7803423576 to 7803423579.
+      You can also write a range with two full numbers, such as <code>7803423576-7803423579</code>.
+      Phone-style numbers work too: <code>780-341-3725</code> is a single number and <code>780-341-3725-3730</code> expands to 780-341-3725 through 780-341-3730.
+      Lines that start with <code>**</code>, or that contain text such as <code>**CRTC MIGRATION TO GOCO</code>, are ignored.
+    </p>
+  </details>
+</main>
+
+<script>
+(function () {
+  var MAX_RANGE = 100000; // safety limit per range
+
+  var input = document.getElementById("input");
+  var output = document.getElementById("output");
+  var statusEl = document.getElementById("status");
+  var errorsEl = document.getElementById("errors");
+
+  var EXAMPLE = [
+    "7803423515",
+    "78034235173518",
+    "7803423541",
+    "78034235433544",
+    "78034235763579",
+    "78034235903593",
+    "7803423600",
+    "7803423647"
+  ].join("\n");
+
+  function expandLine(line) {
+    // Phone format: 780-341-3725 (single) or 780-341-3725-3730 (range)
+    var ph = line.match(/^(\d{3})[-.\s](\d{3})[-.\s](\d{4})(?:\s*[-\u2013]\s*(\d{1,4}))?$/);
+    if (ph) {
+      var prefix = ph[1] + "-" + ph[2] + "-";
+      var from = ph[3];
+      if (!ph[4]) return [prefix + from];
+      var to = ph[4];
+      if (to.length < 4) to = from.slice(0, 4 - to.length) + to;
+      var f = Number(from), t = Number(to);
+      if (t < f) throw new Error("The end number is smaller than the start number.");
+      var out = [];
+      for (var k = f; k <= t; k++) out.push(prefix + String(k).padStart(4, "0"));
+      return out;
+    }
+
+    // Two full numbers separated by a non-digit, e.g. 7803423576-7803423579
+    var parts = line.split(/[^0-9]+/).filter(Boolean);
+    var start, end, width;
+
+    if (parts.length === 2) {
+      start = parts[0];
+      end = parts[1];
+      if (end.length < start.length) {
+        end = start.slice(0, start.length - end.length) + end;
+      }
+    } else if (parts.length === 1) {
+      var digits = parts[0];
+      if (digits.length <= 10) {
+        return [digits];
+      }
+      // Joined range: first 10 digits = start, remaining digits = end suffix
+      start = digits.slice(0, 10);
+      var suffix = digits.slice(10);
+      end = start.slice(0, 10 - suffix.length) + suffix;
+    } else {
+      throw new Error("Could not read this line.");
+    }
+
+    width = start.length;
+    var a = Number(start);
+    var b = Number(end);
+    if (b < a) throw new Error("The end number is smaller than the start number.");
+    if (b - a + 1 > MAX_RANGE) throw new Error("Range is larger than " + MAX_RANGE + " numbers.");
+
+    var list = [];
+    for (var n = a; n <= b; n++) {
+      list.push(String(n).padStart(width, "0"));
+    }
+    return list;
+  }
+
+  function run() {
+    var lines = input.value.split(/\r?\n/);
+    var results = [];
+    var errors = [];
+    var skipped = 0;
+
+    lines.forEach(function (raw, i) {
+      var line = raw.trim();
+      if (!line) return;
+      // Ignore lines that start with ** or contain text (e.g. **CRTC MIGRATION TO GOCO)
+      if (/^\*/.test(line) || /[A-Za-z]/.test(line)) { skipped++; return; }
+      try {
+        results = results.concat(expandLine(line));
+      } catch (e) {
+        errors.push("Line " + (i + 1) + " (" + line + "): " + e.message);
+      }
+    });
+
+    output.value = results.join("\n");
+    errorsEl.textContent = errors.join("\n");
+    statusEl.textContent = results.length + (results.length === 1 ? " number" : " numbers") +
+      (skipped ? ", " + skipped + (skipped === 1 ? " line" : " lines") + " ignored" : "");
+  }
+
+  document.getElementById("run").addEventListener("click", run);
+  input.addEventListener("input", run);
+
+  document.getElementById("clear").addEventListener("click", function () {
+    input.value = "";
+    output.value = "";
+    errorsEl.textContent = "";
+    statusEl.textContent = "";
+    input.focus();
+  });
+
+  document.getElementById("example").addEventListener("click", function () {
+    input.value = EXAMPLE;
+    run();
+  });
+
+  document.getElementById("dedupe").addEventListener("click", function () {
+    var list = output.value.split(/\r?\n/).filter(Boolean);
+    if (!list.length) return;
+    var seen = {};
+    var unique = list.filter(function (n) {
+      if (seen[n]) return false;
+      seen[n] = true;
+      return true;
+    });
+    var removed = list.length - unique.length;
+    output.value = unique.join("\n");
+    statusEl.textContent = removed
+      ? removed + (removed === 1 ? " duplicate" : " duplicates") + " removed, " + unique.length + " left"
+      : "No duplicates found, " + unique.length + " numbers";
+  });
+
+  document.getElementById("copy").addEventListener("click", function () {
+    if (!output.value) return;
+    var done = function () { statusEl.textContent = "Copied"; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(output.value).then(done, function () {
+        output.select(); document.execCommand("copy"); done();
+      });
+    } else {
+      output.select(); document.execCommand("copy"); done();
+    }
+  });
+})();
+</script>
+</body>
+</html>
